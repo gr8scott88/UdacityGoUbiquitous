@@ -38,13 +38,16 @@ import com.example.android.sunshine.app.sync.SunshineSyncAdapter;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GoogleApiAvailability;
 import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.PendingResult;
 import com.google.android.gms.common.api.ResultCallback;
 import com.google.android.gms.wearable.DataApi;
 import com.google.android.gms.wearable.DataMap;
 import com.google.android.gms.wearable.PutDataMapRequest;
+import com.google.android.gms.wearable.PutDataRequest;
 import com.google.android.gms.wearable.Wearable;
 
-public class MainActivity extends AppCompatActivity implements ForecastFragment.Callback, GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener  {
+public class MainActivity extends AppCompatActivity implements
+        ForecastFragment.Callback  {
 
     private final String LOG_TAG = MainActivity.class.getSimpleName();
     private static final String DETAILFRAGMENT_TAG = "DFTAG";
@@ -108,11 +111,7 @@ public class MainActivity extends AppCompatActivity implements ForecastFragment.
             // a token. If we do not, then we will start the IntentService that will register this
             // application with GCM.
 
-            mGoogleApiClient = new GoogleApiClient.Builder(MainActivity.this)
-                    .addApi(Wearable.API)
-                    .addConnectionCallbacks(MainActivity.this)
-                    .addOnConnectionFailedListener(MainActivity.this)
-                    .build();
+            Log.v(LOG_TAG, "Connecting to google play services");
 
 
             SharedPreferences sharedPreferences =
@@ -163,7 +162,17 @@ public class MainActivity extends AppCompatActivity implements ForecastFragment.
                 df.onLocationChanged(location);
             }
             mLocation = location;
+
+
+
         }
+
+        //mGoogleApiClient.connect();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
     }
 
     @Override
@@ -213,54 +222,4 @@ public class MainActivity extends AppCompatActivity implements ForecastFragment.
         return true;
     }
 
-    @Override
-    public void onConnected(Bundle bundle) {
-        Log.d(LOG_TAG,"Connected to wear");
-
-        String location = Utility.getPreferredLocation(MainActivity.this);
-        Uri weatherLocation = WeatherContract.WeatherEntry.buildWeatherLocationWithDate(location, System.currentTimeMillis());
-        String sortOrder = WeatherContract.WeatherEntry.COLUMN_DATE + " ASC";
-        Cursor cursor = new CursorLoader(MainActivity.this,weatherLocation,WeatherContract.WeatherEntry.buildWearableColumns(),null,null,sortOrder).loadInBackground();
-        sendWeatherDataToWear(cursor);
-    }
-
-    private void sendWeatherDataToWear(Cursor c){
-
-        //TODO: finish refactoring
-
-        if(c != null) {
-            c.moveToPosition(0);
-            PutDataMapRequest dataMapRequest = PutDataMapRequest.create("/weather_data");
-            DataMap data = dataMapRequest.getDataMap();
-
-            data.putString(getString(R.string.wearable_passed_max_temp), Utility.formatTemperature(MainActivity.this, c.getDouble(DetailFragment.COL_WEATHER_MAX_TEMP)));
-            data.putString(getString(R.string.wearable_passed_min_temp), Utility.formatTemperature(MainActivity.this, c.getDouble(DetailFragment.COL_WEATHER_MIN_TEMP)));
-            data.putInt(getString(R.string.wearable_passed_image_id), c.getInt(DetailFragment.COL_WEATHER_CONDITION_ID));
-            Wearable.DataApi.putDataItem(mGoogleApiClient, dataMapRequest.asPutDataRequest())
-                    .setResultCallback(new ResultCallback<DataApi.DataItemResult>() {
-                        @Override
-                        public void onResult(DataApi.DataItemResult dataItemResult) {
-                            if (!dataItemResult.getStatus().isSuccess()) {
-                                Log.e("YourApp", "ERROR: failed to putDataItem, status code: "
-                                        + dataItemResult.getStatus().getStatusCode());
-                            } else {
-                                Log.e("YourApp", "Success: putDataItem, status code: "
-                                        + dataItemResult.getStatus().getStatusCode());
-                            }
-                        }
-                    });
-            c.close();
-        }
-    }
-
-
-    @Override
-    public void onConnectionSuspended(int i) {
-        Log.d(LOG_TAG,"Disconnected from wear");
-    }
-
-    @Override
-    public void onConnectionFailed(ConnectionResult connectionResult) {
-        Log.d(LOG_TAG,"Could not connect to wear");
-    }
 }

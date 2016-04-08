@@ -179,8 +179,6 @@ public class WeatherContract {
                     WeatherContract.WeatherEntry.COLUMN_WIND_SPEED,
                     WeatherContract.WeatherEntry.COLUMN_DEGREES,
                     WeatherContract.WeatherEntry.COLUMN_WEATHER_ID,
-                    // This works because the WeatherProvider returns location data joined with
-                    // weather data, even though they're stored in two different tables.
                     WeatherContract.LocationEntry.COLUMN_LOCATION_SETTING
             };
 

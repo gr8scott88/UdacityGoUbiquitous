@@ -14,13 +14,15 @@
  * limitations under the License.
  */
 
-package tutorial.nanodegree.nemesisdev.com.sunshinewear;
+package com.example.android.sunshine.wearapp;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -32,12 +34,24 @@ import android.os.Message;
 import android.support.wearable.watchface.CanvasWatchFaceService;
 import android.support.wearable.watchface.WatchFaceStyle;
 import android.text.format.Time;
+import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.WindowInsets;
+
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.wearable.DataApi;
+import com.google.android.gms.wearable.DataEvent;
+import com.google.android.gms.wearable.DataEventBuffer;
+import com.google.android.gms.wearable.DataItem;
+import com.google.android.gms.wearable.DataMap;
+import com.google.android.gms.wearable.DataMapItem;
+import com.google.android.gms.wearable.Wearable;
 
 import java.lang.ref.WeakReference;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
+
 
 /**
  * Digital watch face with seconds. In ambient mode, the seconds aren't displayed. On devices with
@@ -47,6 +61,14 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
     private static final Typeface NORMAL_TYPEFACE =
             Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
 
+
+    private static final String KEY_HIGH_TEMP = "HIGHTEMP";
+    private static final String KEY_LOW_TEMP = "LOWTEMP";
+    private static final String KEY_ICON = "ICON";
+
+
+
+    private static final String LOG_TAG = "SunshineWear";
     /**
      * Update rate in milliseconds for interactive mode. We update once a second since seconds are
      * displayed in interactive mode.
@@ -83,13 +105,29 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
         }
     }
 
-    private class Engine extends CanvasWatchFaceService.Engine {
+    private class Engine extends CanvasWatchFaceService.Engine implements
+            GoogleApiClient.ConnectionCallbacks,
+            GoogleApiClient.OnConnectionFailedListener,
+            DataApi.DataListener{
         final Handler mUpdateTimeHandler = new EngineHandler(this);
         boolean mRegisteredTimeZoneReceiver = false;
+        private boolean mConnected = false;
+        private boolean mListening = false;
         Paint mBackgroundPaint;
-        Paint mTextPaint;
+        Paint mTimePaint;
+        Paint mMaxTempPaint;
+        Paint mMinTempPaint;
+        Paint mDebugPaint;
         boolean mAmbient;
         Time mTime;
+        private String mTempMax = "";
+        private String mTempMin = "";
+        private int mWeatherImageId;
+        private int mWeatherDrawableId;
+        private Bitmap mWeatherDrawable;
+        private boolean mDataReceived = false;
+        private static final boolean mDebug = false;
+        private GoogleApiClient mGoogleApiClient;
         final BroadcastReceiver mTimeZoneReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -118,48 +156,67 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
                     .setShowSystemUiTime(false)
                     .setAcceptsTapEvents(true)
                     .build());
+
+            mGoogleApiClient = new GoogleApiClient.Builder(SunshineWatchFace.this)
+                    .addApi(Wearable.API)
+                    .addConnectionCallbacks(this)
+                    .addOnConnectionFailedListener(this)
+                    .build();
+            this.presetObjects();
+
+
+            Log.d(LOG_TAG, "Creating watch face");
+
+        }
+
+        public void presetObjects(){
             Resources resources = SunshineWatchFace.this.getResources();
             mYOffset = resources.getDimension(R.dimen.digital_y_offset);
 
             mBackgroundPaint = new Paint();
             mBackgroundPaint.setColor(resources.getColor(R.color.background));
 
-            mTextPaint = new Paint();
-            mTextPaint = createTextPaint(resources.getColor(R.color.digital_text));
+            mTimePaint = new Paint();
+            mTimePaint = createTextPaint(resources.getColor(R.color.digital_text));
+            if (mDebug) {
+                mDebugPaint = createDebugPaint(resources.getColor(R.color.digital_text));
+            }
+
+            mMaxTempPaint = new Paint();
+            mMaxTempPaint = createTextPaint(resources.getColor(R.color.max_text));
+            mMinTempPaint = new Paint();
+            mMinTempPaint = createTextPaint(resources.getColor(R.color.min_text));
 
             mTime = new Time();
+
         }
 
         @Override
         public void onDestroy() {
             mUpdateTimeHandler.removeMessages(MSG_UPDATE_TIME);
+            if(mGoogleApiClient != null && mGoogleApiClient.isConnected()){
+                Wearable.DataApi.removeListener(mGoogleApiClient,this);
+                mGoogleApiClient.disconnect();
+            }
+            mConnected = false;
             super.onDestroy();
-        }
-
-        private Paint createTextPaint(int textColor) {
-            Paint paint = new Paint();
-            paint.setColor(textColor);
-            paint.setTypeface(NORMAL_TYPEFACE);
-            paint.setAntiAlias(true);
-            return paint;
         }
 
         @Override
         public void onVisibilityChanged(boolean visible) {
             super.onVisibilityChanged(visible);
-
+            Log.d(LOG_TAG, "Visiblity changed");
             if (visible) {
+                mGoogleApiClient.connect();
+                mConnected = true;
                 registerReceiver();
-
-                // Update time zone in case it changed while we weren't visible.
                 mTime.clear(TimeZone.getDefault().getID());
                 mTime.setToNow();
             } else {
                 unregisterReceiver();
-            }
+                unregisterWearListener();
 
-            // Whether the timer should be running depends on whether we're visible (as well as
-            // whether we're in ambient mode), so we may need to start or stop the timer.
+            }
             updateTimer();
         }
 
@@ -180,6 +237,43 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
             SunshineWatchFace.this.unregisterReceiver(mTimeZoneReceiver);
         }
 
+
+        private void registerWearListener() {
+            if (mGoogleApiClient != null) {
+                mGoogleApiClient.connect();
+            }
+        }
+
+        private void unregisterWearListener() {
+            if (mGoogleApiClient != null && mGoogleApiClient.isConnected()) {
+                Wearable.DataApi.removeListener(mGoogleApiClient, this);
+                mListening = false;
+                mGoogleApiClient.disconnect();
+                mConnected = false;
+            }
+        }
+
+        private Paint createTextPaint(int textColor) {
+            Paint paint = new Paint();
+            paint.setColor(textColor);
+            paint.setTypeface(NORMAL_TYPEFACE);
+            paint.setAntiAlias(true);
+            return paint;
+        }
+
+
+        private Paint createDebugPaint(int textColor) {
+            Paint paint = new Paint();
+            paint.setColor(textColor);
+            paint.setTypeface(NORMAL_TYPEFACE);
+            paint.setAntiAlias(true);
+            return paint;
+        }
+
+
+
+
+
         @Override
         public void onApplyWindowInsets(WindowInsets insets) {
             super.onApplyWindowInsets(insets);
@@ -192,7 +286,15 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
             float textSize = resources.getDimension(isRound
                     ? R.dimen.digital_text_size_round : R.dimen.digital_text_size);
 
-            mTextPaint.setTextSize(textSize);
+            mTimePaint.setTextSize(textSize);
+            mMaxTempPaint.setTextSize(textSize * 0.8f);
+            mMinTempPaint.setTextSize(textSize * 0.8f);
+            Log.d(LOG_TAG, "Paint Text Size: " + textSize);
+            if (mDebug){
+                mDebugPaint.setTextSize(textSize * 0.25f);
+            }
+
+
         }
 
         @Override
@@ -213,7 +315,7 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
             if (mAmbient != inAmbientMode) {
                 mAmbient = inAmbientMode;
                 if (mLowBitAmbient) {
-                    mTextPaint.setAntiAlias(!inAmbientMode);
+                    mTimePaint.setAntiAlias(!inAmbientMode);
                 }
                 invalidate();
             }
@@ -238,6 +340,7 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
                     // The user has started a different gesture or otherwise cancelled the tap.
                     break;
                 case TAP_TYPE_TAP:
+                    Log.d(LOG_TAG, "User Tapped");
                     // The user has completed the tap gesture.
                     mTapCount++;
                     mBackgroundPaint.setColor(resources.getColor(mTapCount % 2 == 0 ?
@@ -261,7 +364,38 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
             String text = mAmbient
                     ? String.format("%d:%02d", mTime.hour, mTime.minute)
                     : String.format("%d:%02d:%02d", mTime.hour, mTime.minute, mTime.second);
-            canvas.drawText(text, mXOffset, mYOffset, mTextPaint);
+            //text = mListening + "";
+            canvas.drawText(text, mXOffset, mYOffset, mTimePaint);
+
+
+            if (mDebug){
+                String connectedString = mConnected + "";
+                String listeningString = mListening+"";
+
+                float height1 = (bounds.height()*0.5f) + mXOffset + mTimePaint.getTextSize() + 10;
+                float height2 = (bounds.height()*0.55f) + mXOffset + mTimePaint.getTextSize() + 10;
+
+                canvas.drawText("Connected", bounds.width() * 0.35f, height1, mDebugPaint);
+                canvas.drawText("Listening", bounds.width() * 0.65f, height1, mDebugPaint);
+                canvas.drawText(connectedString, bounds.width() * 0.35f, height2, mDebugPaint);
+                canvas.drawText(listeningString, bounds.width() * 0.65f, height2, mDebugPaint);
+            }
+
+
+            if (mDataReceived){
+                canvas.drawText(mTempMax,
+                        bounds.width() * 0.65f - mMaxTempPaint.measureText(mTempMax) / 2,
+                        bounds.height() * 0.65f,
+                        mMaxTempPaint);
+
+                canvas.drawText(mTempMin,
+                        bounds.width() * 0.35f - mMinTempPaint.measureText(mTempMin) / 2,
+                        bounds.height() * 0.65f,
+                        mMinTempPaint);
+
+                canvas.drawBitmap(mWeatherDrawable, bounds.width() * 0.5f - mWeatherDrawable.getWidth()/2, bounds.height() * 0.8f - mWeatherDrawable.getHeight() / 2, null);
+            }
+
         }
 
         /**
@@ -295,5 +429,83 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
                 mUpdateTimeHandler.sendEmptyMessageDelayed(MSG_UPDATE_TIME, delayMs);
             }
         }
+
+        @Override
+        public void onConnected(Bundle bundle) {
+            Log.d(LOG_TAG, "Connection successful");
+            Wearable.DataApi.addListener(mGoogleApiClient, Engine.this);
+            mListening = true;
+            //Wearable.DataApi.getDataItems(mGoogleApiClient).setResultCallback(this);
+        }
+
+        @Override
+        public void onConnectionSuspended(int i) {
+            Log.d(LOG_TAG, "Connection suspended");
+        }
+
+        @Override
+        public void onDataChanged(DataEventBuffer dataEventBuffer) {
+            Log.d(LOG_TAG,"data changed" + dataEventBuffer.toString());
+            for (DataEvent event : dataEventBuffer) {
+                if (event.getType() == DataEvent.TYPE_CHANGED) {
+                    DataItem item = event.getDataItem();
+                    //if (item.getUri().getPath().compareTo("/wearabledata") == 0) {
+                    if (item.getUri().getPath().equals("/wearabledata")) {
+                        DataMap dataMap = DataMapItem.fromDataItem(item).getDataMap();
+                        mTempMin = dataMap.getString(KEY_LOW_TEMP);
+                        mTempMax = dataMap.getString(KEY_HIGH_TEMP);
+                        mWeatherImageId = dataMap.getInt(KEY_ICON);
+                        mWeatherDrawableId = getWeatherDrawable(mWeatherImageId);
+                        Bitmap weatherBitmap = BitmapFactory.decodeResource(getApplicationContext().getResources(), mWeatherDrawableId);
+                        float width = (weatherBitmap.getWidth() * mTimePaint.getTextSize()) / weatherBitmap.getHeight();
+                        mWeatherDrawable = Bitmap.createScaledBitmap(weatherBitmap, (int) width, (int) mTimePaint.getTextSize(), true);
+                        mDataReceived = true;
+                    }
+                } else if (event.getType() == DataEvent.TYPE_DELETED) {
+                    // DataItem deleted
+                }
+            }
+
+            Log.d(LOG_TAG, "Received updated result.... Max Temp is " + mTempMax);
+
+            dataEventBuffer.release();
+            if (isVisible() && !isInAmbientMode()) {
+                invalidate();
+            }
+        }
+
+        @Override
+        public void onConnectionFailed(ConnectionResult connectionResult) {
+            Log.d(LOG_TAG, "Connection failed");
+        }
+
+        public int getWeatherDrawable(int weatherId){
+            if (weatherId >= 200 && weatherId <= 232) {
+                return R.drawable.ic_storm;
+            } else if (weatherId >= 300 && weatherId <= 321) {
+                return R.drawable.ic_light_rain;
+            } else if (weatherId >= 500 && weatherId <= 504) {
+                return R.drawable.ic_rain;
+            } else if (weatherId == 511) {
+                return R.drawable.ic_snow;
+            } else if (weatherId >= 520 && weatherId <= 531) {
+                return R.drawable.ic_rain;
+            } else if (weatherId >= 600 && weatherId <= 622) {
+                return R.drawable.ic_snow;
+            } else if (weatherId >= 701 && weatherId <= 761) {
+                return R.drawable.ic_fog;
+            } else if (weatherId == 761 || weatherId == 781) {
+                return R.drawable.ic_storm;
+            } else if (weatherId == 800) {
+                return R.drawable.ic_clear;
+            } else if (weatherId == 801) {
+                return R.drawable.ic_light_clouds;
+            } else if (weatherId >= 802 && weatherId <= 804) {
+                return R.drawable.ic_cloudy;
+            }
+            return -1;
+
+        }
+
     }
 }
